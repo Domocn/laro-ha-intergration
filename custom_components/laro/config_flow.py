@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.components import zeroconf
 from homeassistant.const import CONF_URL
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN, CONF_TOKEN
@@ -46,21 +46,7 @@ class LaroConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         port = discovery_info.port or 8001
         name = discovery_info.name.replace("._laro._tcp.local.", "")
 
-        # Only trust discovery of hosts on the local network. A spoofed mDNS
-        # advert pointing at a public host could otherwise harvest API tokens.
-        try:
-            import ipaddress
-            ip = ipaddress.ip_address(host)
-            if not (ip.is_private or ip.is_loopback or ip.is_link_local):
-                _LOGGER.warning("Ignoring Laro discovery for non-local host %s", host)
-                return self.async_abort(reason="not_local")
-        except ValueError:
-            return self.async_abort(reason="not_local")
-
-        # Prefer HTTPS when the instance advertises it (TXT record "https=1").
-        props = getattr(discovery_info, "properties", {}) or {}
-        scheme = "https" if str(props.get("https", "")).lower() in ("1", "true") else "http"
-        self._discovered_url = f"{scheme}://{host}:{port}"
+        self._discovered_url = f"http://{host}:{port}"
         self._discovered_name = name
 
         # Check if already configured
@@ -105,7 +91,9 @@ class LaroConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         user_id = user_data.get("id", "default")
 
                         await self.async_set_unique_id(f"laro_{user_id}")
-                        self._abort_if_unique_id_configured()
+                        self._abort_if_unique_id_configured(
+                            updates={CONF_URL: self._discovered_url, CONF_TOKEN: token}
+                        )
 
                         return self.async_create_entry(
                             title=f"Laro ({self._discovered_name or user_data.get('email', 'User')})",
@@ -113,6 +101,8 @@ class LaroConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         )
                     else:
                         errors["base"] = "invalid_auth"
+            except AbortFlow:
+                raise
             except aiohttp.ClientError:
                 errors["base"] = "cannot_connect"
             except Exception:
@@ -158,7 +148,9 @@ class LaroConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 user_id = user_data.get("id", "default")
 
                                 await self.async_set_unique_id(f"laro_{user_id}")
-                                self._abort_if_unique_id_configured()
+                                self._abort_if_unique_id_configured(
+                                    updates={CONF_URL: url, CONF_TOKEN: token}
+                                )
 
                                 return self.async_create_entry(
                                     title=f"Laro ({user_data.get('email', 'User')})",
@@ -170,6 +162,8 @@ class LaroConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         errors["base"] = "invalid_auth"
                     else:
                         errors["base"] = "cannot_connect"
+            except AbortFlow:
+                raise
             except aiohttp.ClientError:
                 errors["base"] = "cannot_connect"
             except Exception:  # pylint: disable=broad-except
